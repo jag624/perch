@@ -15,17 +15,17 @@ export class RoomTracker {
 
   /**
    * @param {Array<{ username: string }>} users normalised viewers present now
-   * @returns {{ arrivals: object[], departures: object[], present: object[], presentCount: number }}
+   * @returns {{ arrivals: object[], departures: object[], present: object[], presentCount: number, namedCount: number }}
    */
   update(users) {
     const t = this.now();
     this.polls += 1;
-    const present = new Set();
+    const namedPresent = new Set();
     const arrivals = [];
 
     for (const user of users) {
       if (!user?.username) continue;
-      present.add(user.username);
+      namedPresent.add(user.username);
       const known = this.seen.get(user.username);
       if (known) {
         known.user = user; // refresh the token totals on every poll
@@ -37,13 +37,16 @@ export class RoomTracker {
 
     const departures = [];
     for (const [username, entry] of this.seen) {
-      if (!present.has(username)) {
+      if (!namedPresent.has(username)) {
         departures.push({ ...entry.user, firstSeenAt: entry.firstSeenAt, dwellMs: t - entry.firstSeenAt });
         this.seen.delete(username);
       }
     }
 
-    return { arrivals, departures, present: users, presentCount: present.size };
+    // `present` is every viewer handed in this poll, named or not; `presentCount`
+    // is honestly its length. `namedCount` is the tracked/named subset — the only
+    // group this class can diff arrivals and departures for.
+    return { arrivals, departures, present: users, presentCount: users.length, namedCount: namedPresent.size };
   }
 
   /** Viewers currently tracked, with how long they have been in the room. */

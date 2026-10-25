@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { normalizeViewer } from '../src/core/room-feed.js';
-import { classifyTipper, DEFAULT_THRESHOLDS, DAY_MS } from '../src/core/classify.js';
+import { classifyTipper, DEFAULT_THRESHOLDS, DAY_MS, TIER_WEIGHTS } from '../src/core/classify.js';
 
 const NOW = Date.parse('2026-10-25T12:00:00Z');
 const MODEL = 'yourroom';
@@ -122,6 +122,49 @@ test('classify: a failed dossier lookup says so instead of inventing a history',
 test('classify: a lookup failure still uses the live feed for someone who tipped here', () => {
   const result = classifyTipper({ room: room({ tipsWeek: 600, allTimeTokens: 4_000 }), member: null, now: NOW });
   assert.equal(result.tier, 'regular');
+});
+
+test('classify: tier weights strictly decrease in the documented actionability order', () => {
+  const actionabilityOrder = [
+    'returning_whale',
+    'whale',
+    'regular',
+    'prospect',
+    'lapsed',
+    'new_face',
+    'history_unknown',
+    'window_shopper',
+    'anonymous',
+  ];
+  for (let i = 1; i < actionabilityOrder.length; i += 1) {
+    const higher = actionabilityOrder[i - 1];
+    const lower = actionabilityOrder[i];
+    assert.ok(
+      TIER_WEIGHTS[higher] > TIER_WEIGHTS[lower],
+      `${higher} (${TIER_WEIGHTS[higher]}) must outrank ${lower} (${TIER_WEIGHTS[lower]})`,
+    );
+  }
+});
+
+test('classify: a known tipper elsewhere is a prospect, never "never tipped"', () => {
+  const result = classifyTipper({
+    room: room({ allTimeTokens: 0 }),
+    member: dossier({ all_time_tokens: 1_000, last_tip_date: daysAgo(1), models_tipped_2weeks: 1 }),
+    modelName: MODEL,
+    now: NOW,
+  });
+  assert.equal(result.tier, 'prospect');
+  assert.equal(result.label, 'Pays elsewhere');
+  assert.ok(
+    !result.reasons.some((r) => /never tip/i.test(r)),
+    `a recorded tipper must not be called "never tipped": ${result.reasons.join(' / ')}`,
+  );
+});
+
+test('classify: a batch row that errored is unavailable, not a blank history', () => {
+  const result = classifyTipper({ room: room(), member: { name: 'x', error: 'not found' }, modelName: MODEL, now: NOW });
+  assert.equal(result.tier, 'history_unknown');
+  assert.match(result.reasons.join(' '), /no dossier returned/);
 });
 
 test('classify: thresholds are injectable so they can be calibrated on real data', () => {

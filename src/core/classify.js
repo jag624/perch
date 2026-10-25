@@ -18,15 +18,14 @@ export const DEFAULT_THRESHOLDS = Object.freeze({
   whaleTrailing30dTokens: 10_000,
   recencyDays: 7,
   lapseDays: 30,
-  prospectBreadth: 3,
   newAccountDays: 30,
 });
 
 export const TIER_WEIGHTS = Object.freeze({
   returning_whale: 100,
   whale: 80,
-  prospect: 60,
-  regular: 50,
+  regular: 60,
+  prospect: 50,
   lapsed: 40,
   new_face: 20,
   history_unknown: 15,
@@ -68,6 +67,10 @@ export function formatTokens(n) {
 export function classifyTipper({ room, member = null, modelName = null, thresholds = DEFAULT_THRESHOLDS, now = Date.now() } = {}) {
   if (!room) throw new Error('classifyTipper: a room feed entry is required');
 
+  // A batch row can come back shaped {name, error} rather than null — the API
+  // permits per-row errors — and that is just as unavailable as no dossier at all.
+  const dossierUnavailable = !member || Boolean(member.error);
+
   const reasons = [];
   const valueTokens = toNumber(member?.all_time_tokens) || room.tokens.room.allTime || 0;
   const elsewhereTokens = Math.max(0, valueTokens - room.tokens.room.allTime);
@@ -107,8 +110,8 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
   else if (elsewhereTokens > 0) reasons.push(`${formatTokens(elsewhereTokens)} tokens in other rooms`);
   if (daysSinceLastTip != null) reasons.push(`last tipped ${Math.round(daysSinceLastTip)} days ago`);
   if (breadth > 0) reasons.push(`tipped ${breadth} model${breadth === 1 ? '' : 's'} in the last 2 weeks`);
-  if (tippedHereRecently) reasons.push('tipping this room this week');
-  if (!member) reasons.push('no dossier returned — tier inferred from the live feed only');
+  if (tippedHereRecently) reasons.push('tipping this room recently');
+  if (dossierUnavailable) reasons.push('no dossier returned — tier inferred from the live feed only');
 
   const lapsed = daysSinceLastTip != null && daysSinceLastTip > thresholds.lapseDays;
   // The dossier's own recency beats the feed's window: if the last recorded tip is
@@ -132,14 +135,20 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
     reasons.unshift('spending here right now');
   } else if (tippedHere) {
     tier = 'lapsed';
-    reasons.unshift('has tipped this room before, not this week');
-  } else if (breadth >= thresholds.prospectBreadth) {
+    reasons.unshift('has tipped this room before, not recently');
+  } else if (lastTipAt != null) {
+    // Has tipped somewhere, just never this room. Tip breadth is supporting
+    // evidence here, not the gate — a known tipper is never "never tipped".
     tier = 'prospect';
-    reasons.unshift(`pays other models (${breadth} in 2 weeks) and never this room`);
-  } else if (!member) {
+    reasons.unshift(
+      breadth > 0 ? `pays other models (${breadth} in 2 weeks) and never this room` : 'has tipped before, but never this room',
+    );
+  } else if (dossierUnavailable) {
     tier = 'history_unknown';
     reasons.unshift('history unknown — worth a lookup, not a conclusion');
-  } else if (lastTipAt == null) {
+  } else {
+    // No recorded tip anywhere — the only viewers who can honestly be called
+    // new or never-tipped.
     const tenure = parseDate(member.first_message_date);
     const tenureDays = tenure == null ? null : (now - tenure) / DAY_MS;
     if (tenureDays != null && tenureDays < thresholds.newAccountDays) {
@@ -149,9 +158,6 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
       tier = 'window_shopper';
       reasons.unshift(tenureDays == null ? 'no tip history' : `registered ${Math.round(tenureDays)} days, never tipped`);
     }
-  } else {
-    tier = 'window_shopper';
-    reasons.unshift('no tip history');
   }
 
   return result(tier);
