@@ -125,11 +125,59 @@ test('tokens: a failed refresh clears the session instead of replaying the refre
   assert.equal(refreshes, 1, 'a cleared session must not resend the old refresh token');
 });
 
-test('tokens: set() keeps the existing refresh token when the response omits a new one', () => {
+test('tokens: set() rejects a response that omits the rotated refresh token', () => {
   const c = clock();
-  const store = new TokenStore({ now: c.now, refresh: async () => ({ access_token: 'x', expires_in: 3600 }) });
+  const cleared = [];
+  const store = new TokenStore({
+    now: c.now,
+    onClear: (reason) => cleared.push(reason),
+    refresh: async () => ({ access_token: 'x', expires_in: 3600 }),
+  });
   store.set({ access_token: 'a', refresh_token: 'r1', expires_in: 3600 });
-  store.set({ access_token: 'b', expires_in: 3600 });
-  assert.equal(store.snapshot().refreshToken, 'r1');
-  assert.equal(store.snapshot().accessToken, 'b');
+
+  assert.throws(() => store.set({ access_token: 'b', expires_in: 3600 }), /refresh_token/);
+  assert.equal(store.isAuthenticated, false, 'a contract violation must not leave the retired refresh token usable');
+  assert.equal(cleared.length, 1);
+});
+
+test('tokens: a refresh that resolves after clear() must not resurrect the session', async () => {
+  const c = clock();
+  let resolveRefresh;
+  const store = new TokenStore({
+    now: c.now,
+    refresh: () => new Promise((resolve) => { resolveRefresh = resolve; }),
+  });
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+
+  const pending = store.accessToken();
+  store.clear('user signed out');
+  resolveRefresh({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 });
+
+  await assert.rejects(() => pending, AuthRequiredError);
+  assert.equal(store.isAuthenticated, false, 'a late refresh must not resurrect a cleared session');
+});
+
+test('tokens: set() must not let a concurrent caller re-send the same refresh token', async () => {
+  const c = clock();
+  const seen = [];
+  let resolveRefresh;
+  const store = new TokenStore({
+    now: c.now,
+    refresh: (refreshToken) => {
+      seen.push(refreshToken);
+      return new Promise((resolve) => { resolveRefresh = resolve; });
+    },
+  });
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+
+  const first = store.refreshNow();
+  // e.g. a racing exchange re-installs the same (still expired) pair mid-flight.
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+  const second = store.refreshNow();
+
+  assert.equal(seen.length, 1, 'only one refresh may be sent for a given refresh token at a time');
+
+  resolveRefresh({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 });
+  const [a, b] = await Promise.all([first, second]);
+  assert.equal(a, b, 'concurrent callers must coalesce onto the same in-flight refresh and see the same result');
 });
