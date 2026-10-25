@@ -46,7 +46,11 @@ export function buildAttentionQueue(entries, opts = {}) {
     maxRecencyBonus: opts.maxRecencyBonus ?? DEFAULT_ATTENTION.maxRecencyBonus,
   };
 
-  const scored = entries.map((entry) => {
+  const named = [];
+  const anonymous = [];
+  for (const entry of entries) (entry.room.isAnonymous ? anonymous : named).push(entry);
+
+  const scored = named.map((entry) => {
     const classified = classifyTipper({ ...entry, thresholds, now });
     const { score, parts } = scoreEntry(
       {
@@ -62,6 +66,7 @@ export function buildAttentionQueue(entries, opts = {}) {
       color: entry.room.color,
       userType: entry.room.userType,
       isAnonymous: entry.room.isAnonymous,
+      interactive: true,
       tokens: entry.room.tokens,
       arrivedAt: entry.arrivedAt ?? null,
       dwellMs: entry.arrivedAt != null ? now - entry.arrivedAt : null,
@@ -83,5 +88,34 @@ export function buildAttentionQueue(entries, opts = {}) {
   // score's value term must not be able to bury the single most time-sensitive
   // state in the room, which is somebody deciding right now whether to stay.
   scored.sort((a, b) => b.weight - a.weight || b.score - a.score || a.username.localeCompare(b.username));
+
+  // Anonymous viewers have no account to click into and nothing to action, so
+  // they collapse into a single trailing summary row instead of one entry per
+  // viewer — the count is the real total, taken before the queue limit cuts in.
+  if (anonymous.length) {
+    const classified = classifyTipper({ ...anonymous[0], thresholds, now });
+    scored.push({
+      username: '',
+      color: null,
+      userType: 'anonymous',
+      isAnonymous: true,
+      interactive: false,
+      count: anonymous.length,
+      tokens: null,
+      arrivedAt: null,
+      dwellMs: null,
+      score: 0,
+      scoreParts: null,
+      tier: classified.tier,
+      label: classified.label,
+      weight: classified.weight,
+      valueTokens: 0,
+      elsewhereTokens: 0,
+      daysSinceLastTip: null,
+      breadth: 0,
+      reasons: classified.reasons,
+    });
+  }
+
   return scored.slice(0, limit).map((entry, i) => ({ ...entry, rank: i + 1 }));
 }

@@ -151,13 +151,15 @@ function renderQueue(data) {
     </div>`;
   });
 
-  // Ranked last and shown collapsed: one summary row for every anonymous
-  // viewer, carrying only their count — there is no name to click into.
-  const anonymousCard = anonymous.length
+  // Ranked last and shown collapsed: the backend already folds every
+  // anonymous viewer into one non-interactive summary entry, so render its
+  // real count rather than the (always-1) length of the filtered array.
+  const anonCount = anonymous[0]?.count ?? 0;
+  const anonymousCard = anonCount
     ? `<div class="card anon-summary" style="border-left-color:${tierColor('anonymous')}">
       <div class="card-head">
         <span class="rank">—</span>
-        <span class="name">${anonymous.length} anonymous viewer${anonymous.length === 1 ? '' : 's'}</span>
+        <span class="name">${anonCount} anonymous viewer${anonCount === 1 ? '' : 's'}</span>
         <span class="pill" style="color:${tierColor('anonymous')}">Anonymous</span>
       </div>
     </div>`
