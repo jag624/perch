@@ -32,6 +32,7 @@ export class TokenStore {
     this.onClear = onClear;
     this.state = null; // { accessToken, refreshToken, expiresAt, scope }
     this.inflight = null;
+    this.generation = 0; // bumped by set()/clear() so a stale refresh can detect it was superseded
   }
 
   /** Record a token response (from the exchange or a refresh). */
@@ -39,14 +40,20 @@ export class TokenStore {
     if (!tokens || typeof tokens.access_token !== 'string' || !tokens.access_token) {
       throw new Error('TokenStore.set: access_token is required');
     }
+    if (typeof tokens.refresh_token !== 'string' || !tokens.refresh_token) {
+      // The producer always rotates the refresh token; a response without one is a
+      // contract violation, not a reason to keep sending the one it just retired.
+      this.clear('token response did not include a rotated refresh_token');
+      throw new Error('TokenStore.set: refresh_token is required on every response');
+    }
     const expiresIn = Number(tokens.expires_in);
+    this.generation += 1;
     this.state = {
       accessToken: tokens.access_token,
-      refreshToken: typeof tokens.refresh_token === 'string' && tokens.refresh_token ? tokens.refresh_token : this.state?.refreshToken ?? null,
+      refreshToken: tokens.refresh_token,
       expiresAt: this.now() + (Number.isFinite(expiresIn) ? expiresIn : 3600) * 1000,
       scope: tokens.scope ?? this.state?.scope ?? null,
     };
-    this.inflight = null;
     return this.state;
   }
 
@@ -73,24 +80,42 @@ export class TokenStore {
     if (!this.state.refreshToken) throw new AuthRequiredError('no refresh token stored; the user must sign in again');
 
     const refreshToken = this.state.refreshToken;
-    this.inflight = (async () => {
+    const generation = this.generation;
+    const run = (async () => {
       try {
         const tokens = await this.refresh(refreshToken);
+        if (this.generation !== generation) {
+          // A clear() or set() happened while this refresh was in flight (e.g. a
+          // logout, or another caller installing a newer session). The result is
+          // stale — installing it would resurrect a signed-out session or replay
+          // a token that has already been superseded. Discard it and reflect
+          // whatever is current instead.
+          if (!this.state) throw new AuthRequiredError();
+          return this.state.accessToken;
+        }
         this.set(tokens);
         return this.state.accessToken;
       } catch (err) {
+        if (err instanceof AuthRequiredError) throw err;
         // Do NOT retry with the same refresh token — that is the replay that
         // revokes the user's whole chain. Clear and make the user sign in again.
-        this.clear(err?.message ?? 'refresh failed');
+        // Only if nothing has superseded this refresh already (set() on a
+        // malformed response clears on its own, and double-clearing would fire
+        // onClear twice for one event).
+        if (this.generation === generation) {
+          this.clear(err?.message ?? 'refresh failed');
+        }
         throw err;
       } finally {
-        this.inflight = null;
+        if (this.inflight === run) this.inflight = null;
       }
     })();
-    return this.inflight;
+    this.inflight = run;
+    return run;
   }
 
   clear(reason = 'cleared') {
+    this.generation += 1;
     this.state = null;
     this.inflight = null;
     this.onClear?.(reason);
