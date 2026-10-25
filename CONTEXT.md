@@ -51,6 +51,13 @@ Zero runtime dependencies. Adding one needs a stated reason — the portability 
 4. Commit after each confirmed step with a descriptive message.
 5. **Fix the code, not the test.** If a test fails and the expectation is right, the code is wrong. Several tiers and a ranking rule were corrected exactly that way.
 6. When the answer to a question is a *fact about the world* (field semantics, plan limits, tier mapping) rather than a design choice, verify it against the live API or Statbate's docs — do not assume it.
+7. **Commits here are authored as Javi, deliberately.** The global git identity is `Javier Garcia <jag624@gmail.com>` and commits in this repo are authored as him by his explicit instruction. Do not amend authorship to a bot identity and do not add a co-author trailer — if you spot the attribution and think it looks wrong, it is not; leave it.
+
+## Review status — read before changing anything
+
+This repository has been independently reviewed once and **failed**. Run `cwb-445568979ddd4303bf38c3cb611890d8` (Codex, `gpt-6-astra`, read-only) returned **FAIL with 13 findings, 7 blocking** against revision `2624f4c`: the rate limiter exceeds its stated per-minute ceiling, account budgeting is optional, no separate batch bucket exists, the prospect/regular width order is inverted relative to the design, a payer can be labelled "Never tipped", and the token store's lifecycle mutations defeat its own single-flight refresh. The full list lives in the vault at `projects/perch/decisions-log.md`.
+
+**Corrections to that list are owed and are routed through Claude Code, not authored by Hermes** — the point of the review is independence, and a self-authored correction keeps the same blind spot. Do not silently fix one of these as a side effect of another change; keep them in a single, auditable correction diff.
 
 ## Vault loop
 
