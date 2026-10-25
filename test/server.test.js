@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createServer } from '../src/server.js';
 import { createDemoSource } from '../src/sources/demo.js';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 // The HTTP tests need to bind a localhost socket. A read-only review sandbox may
 // forbid that outright, so probe once at load and register those tests as a stated
@@ -43,10 +48,26 @@ test('demo source: anonymous viewers collapse into one non-interactive summary e
   const live = source.live();
   const anonymousEntries = live.queue.filter((entry) => entry.username === '');
 
-  assert.ok(anonymousEntries.length <= 1, 'anonymous viewers must collapse into at most one queue entry');
-  assert.equal(anonymousEntries.length, 1, 'this fixture should still have anonymous viewers present in the room');
+  assert.equal(anonymousEntries.length, 1, 'the fixture still has anonymous viewers, and they must collapse to exactly one entry');
   assert.equal(anonymousEntries[0].interactive, false, 'the collapsed anonymous entry must be marked non-interactive');
   assert.equal(anonymousEntries[0].count, live.room.anonymous, 'the collapsed entry must carry the real anonymous count');
+});
+
+test('dashboard markup: only named cards can be clicked (STATIC source check — it does not exercise the DOM)', () => {
+  const html = readFileSync(join(HERE, '..', 'public', 'index.html'), 'utf8');
+
+  // The backend collapse is asserted above; this guards the rendering regression a
+  // reviewer found untestable: re-adding a click target to the anonymous summary
+  // would make a blank card fetch an empty viewer name again (HTTP 400).
+  assert.match(html, /querySelectorAll\('\.card\[data-name\]'\)/, 'click handlers must be scoped to cards carrying data-name');
+
+  const start = html.indexOf('anon-summary');
+  assert.ok(start > -1, 'the anonymous summary card markup must exist');
+  const block = html.slice(start, start + 700);
+  assert.ok(!/data-name/.test(block), 'the anonymous summary must NOT carry a data-name, or it becomes clickable');
+
+  const namedTemplates = html.match(/data-name="\$\{esc\(e\.username\)\}"/g) || [];
+  assert.ok(namedTemplates.length >= 1, 'named cards must still carry their username as data-name');
 });
 
 test('demo source: every queue entry carries a reason and a non-negative score', () => {

@@ -8,8 +8,11 @@
 // without one fails closed rather than quietly going unbudgeted.
 //
 // The batch endpoint (`memberInfoBatch`) has its own, separate bucket — 20/min
-// on the full-API tier — and is budgeted against BOTH that bucket and the
-// general account bucket above.
+// on the full-API tier. Both budgets are per ACCOUNT, not per client: `limiter`
+// and `batchLimiter` must both be built once and shared across every client for
+// that account, the same way. Every upstream attempt for a batch request —
+// including retries — is acquired against BOTH that bucket and the general
+// account bucket above, so a 429 retry cannot slip through for free.
 //
 // Verified against the published OpenAPI document. One thing is NOT verified:
 // the batch request body shape (`{ names: [...] }` is the reading of the docs'
@@ -95,29 +98,35 @@ export function createStatbateClient({
   baseUrl = DEFAULT_BASE_URL,
   fetchImpl = globalThis.fetch,
   limiter,
+  batchLimiter,
   unsafeDisableBudget = false,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   maxRetries = 2,
   now = () => Date.now(),
-  batchLimiter = unsafeDisableBudget ? null : createBatchBudget({ now, sleep }),
 } = {}) {
   if (typeof token !== 'string' || !token) throw new Error('createStatbateClient: token is required');
   if (typeof fetchImpl !== 'function') throw new Error('createStatbateClient: fetchImpl must be a function');
-  if (!limiter && !unsafeDisableBudget) {
+  if ((!limiter || !batchLimiter) && !unsafeDisableBudget) {
     throw new Error(
-      'createStatbateClient: limiter is required — build one with createAccountBudget() and share it across ' +
-        "every client for this Statbate account, since the account's 120/min budget is shared by every token " +
-        'it owns. Pass unsafeDisableBudget: true only for tests or demo mode that never call the real API.',
+      'createStatbateClient: limiter and batchLimiter are both required — build each once with ' +
+        "createAccountBudget()/createBatchBudget() and share those same instances across every client for this " +
+        "Statbate account, since both budgets are per account, not per client. Pass unsafeDisableBudget: true " +
+        'only for tests or demo mode that never call the real API.',
     );
   }
-  const accountLimiter = unsafeDisableBudget ? null : limiter;
+  // unsafeDisableBudget relaxes the REQUIREMENT above; it must not discard a
+  // budget the caller explicitly passed, or a test (or demo) that injects one
+  // would silently run unbudgeted and prove nothing.
+  const accountLimiter = limiter ?? null;
+  const batchBudget = batchLimiter ?? null;
 
-  async function request(path, { method = 'GET', query, body } = {}) {
+  async function request(path, { method = 'GET', query, body, limiter: extraLimiter = null } = {}) {
     const url = buildUrl(baseUrl, path, query);
     let attempt = 0;
 
     for (;;) {
       if (accountLimiter) await accountLimiter.acquire(1);
+      if (extraLimiter) await extraLimiter.acquire(1);
 
       const headers = { authorization: `Bearer ${token}`, accept: 'application/json' };
       const init = { method, headers };
@@ -131,6 +140,7 @@ export function createStatbateClient({
       if (res.status === 429) {
         const retryAfterMs = parseRetryAfter(res.headers?.get?.('retry-after'), { now: now() });
         accountLimiter?.penalize(retryAfterMs);
+        extraLimiter?.penalize(retryAfterMs);
         if (attempt >= maxRetries) throw new StatbateError('rate limited by Statbate', { status: 429 });
         attempt += 1;
         await sleep(retryAfterMs);
@@ -151,7 +161,7 @@ export function createStatbateClient({
   return {
     request,
     limiter: accountLimiter,
-    batchLimiter,
+    batchLimiter: batchBudget,
 
     /** The live feed — the spine of the product. */
     roomOnlineUsers({ site, roomname, page, perPage } = {}) {
@@ -187,10 +197,10 @@ export function createStatbateClient({
       const groups = chunk(list, chunkSize);
       const data = [];
       for (const group of groups) {
-        if (batchLimiter) await batchLimiter.acquire(1);
         const res = await request(`/members/${encodeURIComponent(site)}/info/batch`, {
           method: 'POST',
           body: { names: group },
+          limiter: batchBudget,
         });
         if (Array.isArray(res?.data)) data.push(...res.data);
       }

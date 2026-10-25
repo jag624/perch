@@ -52,9 +52,11 @@ test('client: a 429 waits for Retry-After, penalises the account bucket, then re
   const now = () => t;
   const sleeps = [];
   const limiter = createAccountBudget({ now, sleep: async (ms) => { t += ms; } });
+  const batchLimiter = createBatchBudget({ now, sleep: async (ms) => { t += ms; } });
   const client = createStatbateClient({
     token: 't',
     limiter,
+    batchLimiter,
     now,
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -166,7 +168,7 @@ test('client: filters junk names out of a batch rather than sending them upstrea
   assert.deepEqual(sent, ['ok', 'fine']);
 });
 
-test('client: 21 consecutive batch calls do not all reach fetch under the default 20/min batch budget', async () => {
+test('client: 21 consecutive batch calls do not all reach fetch under a shared 20/min batch budget', async () => {
   let t = 0;
   const now = () => t;
   let fetchCount = 0;

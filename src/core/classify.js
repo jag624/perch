@@ -78,12 +78,17 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
   const lastTipAt = parseDate(member?.last_tip_date);
   const daysSinceLastTip = lastTipAt == null ? null : (now - lastTipAt) / DAY_MS;
   const breadth = toNumber(member?.models_tipped_2weeks);
+  const messaged = toNumber(member?.models_messaged_2weeks);
+  const firstTipAt = parseDate(member?.first_tip_date);
   const tippedList = Array.isArray(member?.models_tipped_2weeks_list) ? member.models_tipped_2weeks_list : [];
   const tippedHere = room.tokens.room.allTime > 0;
   const tippedHereRecently = room.tokens.room.week > 0 || room.tokens.room.day > 0;
   const tippedHereThisFortnight = modelName
     ? tippedList.some((n) => String(n).toLowerCase() === String(modelName).toLowerCase())
     : false;
+  // Evidence that this viewer pays, SOMEWHERE — any one of these contradicts
+  // calling them a "never tipped" window shopper or an untested new face.
+  const hasPaidEvidence = valueTokens > 0 || lastTipAt != null || firstTipAt != null || breadth > 0 || messaged > 0;
 
   const result = (tier) => ({
     tier,
@@ -109,7 +114,9 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
   if (tippedHere) reasons.push(`${formatTokens(room.tokens.room.allTime)} tokens with this room all-time`);
   else if (elsewhereTokens > 0) reasons.push(`${formatTokens(elsewhereTokens)} tokens in other rooms`);
   if (daysSinceLastTip != null) reasons.push(`last tipped ${Math.round(daysSinceLastTip)} days ago`);
+  else if (firstTipAt != null) reasons.push('has a recorded first tip, but no last-tip date');
   if (breadth > 0) reasons.push(`tipped ${breadth} model${breadth === 1 ? '' : 's'} in the last 2 weeks`);
+  if (messaged > 0) reasons.push(`messaged ${messaged} model${messaged === 1 ? '' : 's'} in the last 2 weeks`);
   if (tippedHereRecently) reasons.push('tipping this room recently');
   if (dossierUnavailable) reasons.push('no dossier returned — tier inferred from the live feed only');
 
@@ -136,9 +143,13 @@ export function classifyTipper({ room, member = null, modelName = null, threshol
   } else if (tippedHere) {
     tier = 'lapsed';
     reasons.unshift('has tipped this room before, not recently');
-  } else if (lastTipAt != null) {
+  } else if (hasPaidEvidence) {
     // Has tipped somewhere, just never this room. Tip breadth is supporting
     // evidence here, not the gate — a known tipper is never "never tipped".
+    // The gate is ANY evidence of paying (a last or first tip date, all-time
+    // tokens, or breadth/reach in the last 2 weeks) — a single one of those is
+    // enough to contradict "never tipped", so this also keeps a known payer out
+    // of window_shopper/new_face below.
     tier = 'prospect';
     reasons.unshift(
       breadth > 0 ? `pays other models (${breadth} in 2 weeks) and never this room` : 'has tipped before, but never this room',

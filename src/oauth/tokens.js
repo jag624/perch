@@ -19,6 +19,14 @@ export class AuthRequiredError extends Error {
   }
 }
 
+// Calls refresh(refreshToken) synchronously — so a caller that synchronously
+// captures a resolve/reject closure from it still works — but, being itself
+// async, never lets a synchronous throw escape synchronously: it always
+// returns a promise instead.
+async function callRefresh(refresh, refreshToken) {
+  return refresh(refreshToken);
+}
+
 export class TokenStore {
   /**
    * @param {{ refresh: (refreshToken: string) => Promise<object>,
@@ -83,7 +91,18 @@ export class TokenStore {
     const generation = this.generation;
     const run = (async () => {
       try {
-        const tokens = await this.refresh(refreshToken);
+        // callRefresh invokes this.refresh(refreshToken) SYNCHRONOUSLY (so a
+        // mock that synchronously captures its resolve/reject closure still
+        // works), but — being itself an async function — never lets a
+        // synchronous throw from refresh() escape synchronously: it always
+        // returns a promise. Awaiting that promise then always suspends this
+        // function, even though the promise may already be settled. Without
+        // that, a refresh() that throws synchronously would run this whole
+        // try/catch/finally body synchronously inside the IIFE call below,
+        // before `const run = ...` has finished assigning, and the `finally`
+        // block's reference to `run` would throw a ReferenceError that masks
+        // the real error.
+        const tokens = await callRefresh(this.refresh, refreshToken);
         if (this.generation !== generation) {
           // A clear() or set() happened while this refresh was in flight (e.g. a
           // logout, or another caller installing a newer session). The result is
@@ -91,6 +110,15 @@ export class TokenStore {
           // a token that has already been superseded. Discard it and reflect
           // whatever is current instead.
           if (!this.state) throw new AuthRequiredError();
+          if (this.state.refreshToken === refreshToken) {
+            // The pair stored under the new generation is the SAME refresh token
+            // this discarded call just consumed upstream (e.g. a racing set()
+            // re-installed the still-expired pair). The provider has already
+            // retired it, so leaving it in storage means the next refresh resends
+            // a dead token — exactly the replay that revokes the whole chain.
+            this.clear('a discarded rotation left a consumed refresh token stored');
+            throw new AuthRequiredError();
+          }
           return this.state.accessToken;
         }
         this.set(tokens);
@@ -117,7 +145,11 @@ export class TokenStore {
   clear(reason = 'cleared') {
     this.generation += 1;
     this.state = null;
-    this.inflight = null;
+    // `inflight` is deliberately NOT dropped here. A pending refresh's own
+    // `finally` clears it, and releasing the reference mid-flight lets a racing
+    // caller start a SECOND refresh with the same single-use token — the replay
+    // this store exists to prevent. The generation guard above is what makes the
+    // in-flight result harmless, not the reference.
     this.onClear?.(reason);
   }
 

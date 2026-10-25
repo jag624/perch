@@ -125,6 +125,22 @@ test('tokens: a failed refresh clears the session instead of replaying the refre
   assert.equal(refreshes, 1, 'a cleared session must not resend the old refresh token');
 });
 
+test('tokens: a refresh callback that throws synchronously surfaces the real error, not a ReferenceError', async () => {
+  const c = clock();
+  const store = new TokenStore({
+    now: c.now,
+    refresh: () => { throw new Error('upstream'); },
+  });
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+
+  await assert.rejects(() => store.accessToken(), /upstream/);
+  assert.equal(store.isAuthenticated, false, 'a synchronous refresh failure must still clear the session');
+
+  // inflight must not be left holding a settled promise — a later refresh must
+  // still be able to start rather than hanging forever on a dead in-flight slot.
+  await assert.rejects(() => store.accessToken(), AuthRequiredError);
+});
+
 test('tokens: set() rejects a response that omits the rotated refresh token', () => {
   const c = clock();
   const cleared = [];
@@ -176,8 +192,63 @@ test('tokens: set() must not let a concurrent caller re-send the same refresh to
   const second = store.refreshNow();
 
   assert.equal(seen.length, 1, 'only one refresh may be sent for a given refresh token at a time');
-
+  // Promise IDENTITY is not observable here: refreshNow() is async, so every call
+  // returns a fresh wrapper promise even when it coalesces onto the same in-flight
+  // exchange. Assert what a caller can actually observe — one refresh sent, and
+  // both callers ending in the same state.
   resolveRefresh({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 });
-  const [a, b] = await Promise.all([first, second]);
-  assert.equal(a, b, 'concurrent callers must coalesce onto the same in-flight refresh and see the same result');
+  const [firstOutcome, secondOutcome] = await Promise.allSettled([first, second]);
+  assert.equal(firstOutcome.status, secondOutcome.status, 'the racing caller must observe the same outcome as the first');
+  assert.equal(seen.length, 1, 'no second refresh may be sent for the same single-use token');
+  assert.equal(store.isAuthenticated, false, 'the discarded rotation must clear the session, not install a stale pair');
+});
+
+test('tokens: a discarded rotation whose stored refresh token was already consumed clears the session, never replays it', async () => {
+  const c = clock();
+  const seen = [];
+  const cleared = [];
+  let resolveRefresh;
+  const store = new TokenStore({
+    now: c.now,
+    onClear: (reason) => cleared.push(reason),
+    refresh: (refreshToken) => {
+      seen.push(refreshToken);
+      return new Promise((resolve) => { resolveRefresh = resolve; });
+    },
+  });
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+
+  const first = store.refreshNow();
+  // A racing caller (e.g. a duplicate exchange) re-installs the SAME still-expired
+  // pair mid-flight, bumping the generation without changing the refresh token.
+  store.set({ access_token: 'stale', refresh_token: 'r1', expires_in: 10 });
+  const second = store.refreshNow();
+  // refreshNow() is async, so these two calls cannot be the same promise OBJECT even
+  // when they coalesce. Assert the observable instead: one refresh sent, not two.
+  assert.equal(seen.length, 1, 'both callers must share the single in-flight refresh, not send a second');
+
+  // The provider has now rotated r1 -> r2 upstream, but this result is stale
+  // relative to the generation bumped by the racing set() above, so it must be
+  // discarded rather than installed.
+  resolveRefresh({ access_token: 'new', refresh_token: 'r2', expires_in: 3600 });
+
+  // r1 — the token this discarded rotation just consumed upstream — is still the
+  // one sitting in storage. Leaving it there means the next refresh resends a
+  // token the provider has already retired, which is exactly the replay that
+  // revokes the whole chain. The fix must clear the session and force sign-in.
+  await assert.rejects(
+    () => first,
+    AuthRequiredError,
+    'a discarded rotation that leaves a consumed refresh token stored must force sign-in, not resolve quietly',
+  );
+  // The racing caller coalesced onto that same exchange, so it must observe the same
+  // outcome. Leaving it unhandled would also abort the whole file as an unhandled
+  // rejection rather than reporting a test result.
+  await assert.rejects(() => second, AuthRequiredError, 'the racing caller must see the same cleared session');
+  assert.equal(store.isAuthenticated, false, 'the session must be cleared, not left holding the retired r1');
+  assert.ok(cleared.length >= 1, 'onClear must fire for the cleared session');
+
+  // And the real-world consequence: a later refresh attempt must never resend r1.
+  await assert.rejects(() => store.accessToken(), AuthRequiredError);
+  assert.deepEqual(seen, ['r1'], 'r1 must be sent to the provider exactly once, never replayed');
 });
