@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createStatbateClient,
   createAccountBudget,
+  createBatchBudget,
   parseRetryAfter,
   AuthError,
   PlanError,
@@ -33,6 +34,7 @@ test('client: sends a bearer token and builds the live-feed URL with an encoded 
   const calls = [];
   const client = createStatbateClient({
     token: 'secret-token',
+    unsafeDisableBudget: true,
     fetchImpl: async (url, init) => { calls.push({ url: String(url), init }); return jsonResponse({ users: [] }); },
   });
 
@@ -46,12 +48,22 @@ test('client: sends a bearer token and builds the live-feed URL with an encoded 
 
 test('client: a 429 waits for Retry-After, penalises the account bucket, then retries', async () => {
   let attempts = 0;
+  let t = 0;
+  const now = () => t;
   const sleeps = [];
-  const limiter = createAccountBudget({ sleep: async () => {} });
+  const limiter = createAccountBudget({ now, sleep: async (ms) => { t += ms; } });
   const client = createStatbateClient({
     token: 't',
     limiter,
-    sleep: async (ms) => { sleeps.push(ms); },
+    now,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      // The penalty must actually be in effect here, before we honour the wait —
+      // otherwise penalize() would be provably doing nothing.
+      assert.equal(limiter.tryAcquire(), false, 'the account bucket must still be penalised while the retry wait is pending');
+      assert.ok(limiter.blockedForMs > 0, 'blockedForMs should reflect the live penalty');
+      t += ms;
+    },
     fetchImpl: async () => {
       attempts += 1;
       return attempts === 1 ? jsonResponse({ error: 'slow down' }, 429, { 'retry-after': '2' }) : jsonResponse({ users: [] });
@@ -68,6 +80,7 @@ test('client: a persistent 429 gives up instead of hammering a bucket that is cl
   let attempts = 0;
   const client = createStatbateClient({
     token: 't',
+    unsafeDisableBudget: true,
     maxRetries: 1,
     sleep: async () => {},
     fetchImpl: async () => { attempts += 1; return jsonResponse({}, 429, { 'retry-after': '1' }); },
@@ -82,7 +95,11 @@ test('client: a persistent 429 gives up instead of hammering a bucket that is cl
 });
 
 test('client: 401 and 403 are distinct, actionable errors', async () => {
-  const unauthorized = createStatbateClient({ token: 't', fetchImpl: async () => jsonResponse({}, 401) });
+  const unauthorized = createStatbateClient({
+    token: 't',
+    unsafeDisableBudget: true,
+    fetchImpl: async () => jsonResponse({}, 401),
+  });
   await assert.rejects(
     () => unauthorized.roomOnlineUsers({ site: 'chaturbate', roomname: 'x' }),
     (err) => {
@@ -91,7 +108,7 @@ test('client: 401 and 403 are distinct, actionable errors', async () => {
     },
   );
 
-  const forbidden = createStatbateClient({ token: 't', fetchImpl: async () => jsonResponse({}, 403) });
+  const forbidden = createStatbateClient({ token: 't', unsafeDisableBudget: true, fetchImpl: async () => jsonResponse({}, 403) });
   await assert.rejects(
     () => forbidden.roomOnlineUsers({ site: 'chaturbate', roomname: 'x' }),
     (err) => {
@@ -103,7 +120,11 @@ test('client: 401 and 403 are distinct, actionable errors', async () => {
 });
 
 test('client: a 500 surfaces as a StatbateError carrying the status', async () => {
-  const client = createStatbateClient({ token: 't', fetchImpl: async () => jsonResponse({ error: 'boom' }, 500) });
+  const client = createStatbateClient({
+    token: 't',
+    unsafeDisableBudget: true,
+    fetchImpl: async () => jsonResponse({ error: 'boom' }, 500),
+  });
   await assert.rejects(() => client.roomOnlineUsers({ site: 'chaturbate', roomname: 'x' }), (err) => {
     assert.equal(err.status, 500);
     assert.match(err.message, /500/);
@@ -115,6 +136,7 @@ test('client: batch lookups chunk at 100 names and merge, at one request per chu
   const bodySizes = [];
   const client = createStatbateClient({
     token: 't',
+    unsafeDisableBudget: true,
     fetchImpl: async (url, init) => {
       const body = JSON.parse(init.body);
       bodySizes.push(body.names.length);
@@ -137,10 +159,41 @@ test('client: filters junk names out of a batch rather than sending them upstrea
   let sent = null;
   const client = createStatbateClient({
     token: 't',
+    unsafeDisableBudget: true,
     fetchImpl: async (url, init) => { sent = JSON.parse(init.body).names; return jsonResponse({ data: [] }); },
   });
   await client.memberInfoBatch({ site: 'chaturbate', names: ['ok', '', null, undefined, 'fine'] });
   assert.deepEqual(sent, ['ok', 'fine']);
+});
+
+test('client: 21 consecutive batch calls do not all reach fetch under the default 20/min batch budget', async () => {
+  let t = 0;
+  const now = () => t;
+  let fetchCount = 0;
+  let fetchCountAtFirstSleep = null;
+  const batchLimiter = createBatchBudget({
+    now,
+    sleep: async (ms) => {
+      if (fetchCountAtFirstSleep === null) fetchCountAtFirstSleep = fetchCount;
+      t += ms;
+    },
+  });
+  const client = createStatbateClient({
+    token: 't',
+    unsafeDisableBudget: true,
+    batchLimiter,
+    fetchImpl: async (url, init) => {
+      fetchCount += 1;
+      return jsonResponse({ data: [{ name: JSON.parse(init.body).names[0] }] });
+    },
+  });
+
+  const calls = Array.from({ length: 21 }, (_, i) => client.memberInfoBatch({ site: 'chaturbate', names: [`u${i}`] }));
+  await Promise.all(calls);
+
+  assert.ok(fetchCountAtFirstSleep !== null, 'the batch budget never had to wait — the 20/min bucket is not binding');
+  assert.ok(fetchCountAtFirstSleep < 21, 'fetch had already been reached 21 times before the batch budget forced a wait');
+  assert.equal(fetchCount, 21, 'every call still completes once the budget has room');
 });
 
 test('client: refuses to be constructed without a token', () => {

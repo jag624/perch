@@ -18,22 +18,37 @@ test('rate limiter: allows a full burst then refuses', () => {
   assert.equal(limiter.tryAcquire(), false, 'sixth call in the same instant must be refused');
 });
 
-test('rate limiter: refills over time', () => {
+test('rate limiter: a slot frees only once the full window since that acquisition has elapsed', () => {
   const c = clock();
   const limiter = new RateLimiter({ limit: 5, windowMs: 60_000, now: c.now });
-  for (let i = 0; i < 5; i += 1) limiter.tryAcquire();
-  c.advance(12_500); // 5/min == one slot per 12s
-  assert.equal(limiter.tryAcquire(), true);
-  assert.equal(limiter.tryAcquire(), false);
+  limiter.tryAcquire(); // one slot at t=0
+  c.advance(1);
+  for (let i = 0; i < 4; i += 1) limiter.tryAcquire(); // four more at t=1; bucket now full
+  c.advance(59_999); // t=60_000: the window since the t=0 acquisition has fully elapsed
+  assert.equal(limiter.tryAcquire(), true, 'the t=0 acquisition just rolled out of the window');
+  assert.equal(limiter.tryAcquire(), false, 'the four acquisitions at t=1 have not rolled out yet');
 });
 
-test('rate limiter: msUntil reports roughly one slot, and zero when a slot is free', () => {
+test('rate limiter: msUntil reports the time until the oldest acquisition rolls out, and zero when a slot is free', () => {
   const c = clock();
   const limiter = new RateLimiter({ limit: 5, windowMs: 60_000, now: c.now });
   assert.equal(limiter.msUntil(1), 0, 'a fresh limiter has slots available');
   for (let i = 0; i < 5; i += 1) limiter.tryAcquire();
-  const wait = limiter.msUntil(1);
-  assert.ok(wait >= 11_950 && wait <= 12_050, `expected ~12000ms, got ${wait}`);
+  assert.equal(limiter.msUntil(1), 60_000, 'the earliest acquisition does not roll out for a full window');
+  c.advance(30_000);
+  assert.equal(limiter.msUntil(1), 30_000);
+});
+
+test('rate limiter: never permits more than `limit` acquisitions inside any windowMs window', () => {
+  const c = clock();
+  const limiter = new RateLimiter({ limit: 120, windowMs: 60_000, now: c.now });
+  let granted = 0;
+  for (let i = 0; i < 120; i += 1) if (limiter.tryAcquire()) granted += 1;
+  for (let t = 500; t <= 59_500; t += 500) {
+    c.advance(500);
+    if (limiter.tryAcquire()) granted += 1;
+  }
+  assert.equal(granted, 120, 'no more than the per-minute ceiling may be granted inside the first minute');
 });
 
 test('rate limiter: a 429 penalty blocks the bucket even when tokens are free', () => {

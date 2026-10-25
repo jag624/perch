@@ -3,8 +3,13 @@
 // Everything it does is budgeted against ONE RateLimiter per Statbate ACCOUNT,
 // because the published limit is 120 requests/minute per account — extra tokens
 // under one account share the bucket, and extra IPs do not raise it. The limiter
-// is injected rather than owned so a studio-wide scheduler can hand the same
-// budget to every room poller.
+// is injected rather than owned so the same budget can be shared across every
+// client built for that account, and it is a required argument: a client built
+// without one fails closed rather than quietly going unbudgeted.
+//
+// The batch endpoint (`memberInfoBatch`) has its own, separate bucket — 20/min
+// on the full-API tier — and is budgeted against BOTH that bucket and the
+// general account bucket above.
 //
 // Verified against the published OpenAPI document. One thing is NOT verified:
 // the batch request body shape (`{ names: [...] }` is the reading of the docs'
@@ -16,6 +21,7 @@ import { RateLimiter } from '../core/rate-limiter.js';
 
 export const DEFAULT_BASE_URL = 'https://plus.statbate.com/api';
 export const ACCOUNT_REQUESTS_PER_MINUTE = 120;
+export const BATCH_REQUESTS_PER_MINUTE = 20;
 export const MINUTE_MS = 60_000;
 
 export class StatbateError extends Error {
@@ -60,6 +66,15 @@ export function createAccountBudget({ requestsPerMinute = ACCOUNT_REQUESTS_PER_M
   return new RateLimiter({ limit: requestsPerMinute, windowMs: MINUTE_MS, now, sleep });
 }
 
+/**
+ * The batch endpoint's own budget, separate from the general account bucket above.
+ * Defaults to 20/min (full-API tier); pass requestsPerMinute: 120 for the
+ * sign-in tier's documented batch allowance instead.
+ */
+export function createBatchBudget({ requestsPerMinute = BATCH_REQUESTS_PER_MINUTE, now, sleep } = {}) {
+  return new RateLimiter({ limit: requestsPerMinute, windowMs: MINUTE_MS, now, sleep });
+}
+
 export function buildUrl(baseUrl, path, query) {
   const url = new URL(`${String(baseUrl).replace(/\/+$/, '')}${path}`);
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -72,26 +87,37 @@ export function buildUrl(baseUrl, path, query) {
 
 /**
  * @param {{ token: string, baseUrl?: string, fetchImpl?: typeof fetch, limiter?: RateLimiter,
+ *           unsafeDisableBudget?: boolean, batchLimiter?: RateLimiter,
  *           sleep?: (ms: number) => Promise<void>, maxRetries?: number, now?: () => number }} opts
  */
 export function createStatbateClient({
   token,
   baseUrl = DEFAULT_BASE_URL,
   fetchImpl = globalThis.fetch,
-  limiter = null,
+  limiter,
+  unsafeDisableBudget = false,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   maxRetries = 2,
   now = () => Date.now(),
+  batchLimiter = unsafeDisableBudget ? null : createBatchBudget({ now, sleep }),
 } = {}) {
   if (typeof token !== 'string' || !token) throw new Error('createStatbateClient: token is required');
   if (typeof fetchImpl !== 'function') throw new Error('createStatbateClient: fetchImpl must be a function');
+  if (!limiter && !unsafeDisableBudget) {
+    throw new Error(
+      'createStatbateClient: limiter is required — build one with createAccountBudget() and share it across ' +
+        "every client for this Statbate account, since the account's 120/min budget is shared by every token " +
+        'it owns. Pass unsafeDisableBudget: true only for tests or demo mode that never call the real API.',
+    );
+  }
+  const accountLimiter = unsafeDisableBudget ? null : limiter;
 
   async function request(path, { method = 'GET', query, body } = {}) {
     const url = buildUrl(baseUrl, path, query);
     let attempt = 0;
 
     for (;;) {
-      if (limiter) await limiter.acquire(1);
+      if (accountLimiter) await accountLimiter.acquire(1);
 
       const headers = { authorization: `Bearer ${token}`, accept: 'application/json' };
       const init = { method, headers };
@@ -104,7 +130,7 @@ export function createStatbateClient({
 
       if (res.status === 429) {
         const retryAfterMs = parseRetryAfter(res.headers?.get?.('retry-after'), { now: now() });
-        limiter?.penalize(retryAfterMs);
+        accountLimiter?.penalize(retryAfterMs);
         if (attempt >= maxRetries) throw new StatbateError('rate limited by Statbate', { status: 429 });
         attempt += 1;
         await sleep(retryAfterMs);
@@ -124,7 +150,8 @@ export function createStatbateClient({
 
   return {
     request,
-    limiter,
+    limiter: accountLimiter,
+    batchLimiter,
 
     /** The live feed — the spine of the product. */
     roomOnlineUsers({ site, roomname, page, perPage } = {}) {
@@ -160,6 +187,7 @@ export function createStatbateClient({
       const groups = chunk(list, chunkSize);
       const data = [];
       for (const group of groups) {
+        if (batchLimiter) await batchLimiter.acquire(1);
         const res = await request(`/members/${encodeURIComponent(site)}/info/batch`, {
           method: 'POST',
           body: { names: group },

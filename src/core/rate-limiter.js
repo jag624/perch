@@ -1,12 +1,16 @@
-// Token bucket over a fixed window, with an injected clock so it is testable.
+// Sliding-window log over an injected clock, so it is testable.
 //
 // Statbate's limit is 120 requests/minute *per account* — not per token, and not
 // per IP. Every extra token under one account shares the same bucket, so this
 // limiter is owned per account and handed to every client that account uses.
+//
+// This enforces a hard rolling ceiling: never more than `limit` acquisitions are
+// granted inside any windowMs-wide window. A token bucket that refills over time
+// permits bursts above the stated per-minute ceiling (capacity + accrued refill);
+// a sliding log of acquisition timestamps does not.
 
 export class RateLimiter {
-  #tokens;
-  #last;
+  #timestamps;
   #blockedUntil;
 
   /**
@@ -19,39 +23,36 @@ export class RateLimiter {
     this.windowMs = windowMs;
     this.now = now;
     this.sleep = sleep;
-    this.refillPerMs = limit / windowMs;
-    this.#tokens = limit;
-    this.#last = now();
+    this.#timestamps = [];
     this.#blockedUntil = 0;
   }
 
-  #refill(t) {
-    const elapsed = t - this.#last;
-    if (elapsed > 0) {
-      this.#tokens = Math.min(this.limit, this.#tokens + elapsed * this.refillPerMs);
-      this.#last = t;
-    }
+  #prune(t) {
+    const cutoff = t - this.windowMs;
+    while (this.#timestamps.length && this.#timestamps[0] <= cutoff) this.#timestamps.shift();
   }
 
   /** Take a slot if one is available right now. Never waits. */
   tryAcquire(cost = 1) {
     const t = this.now();
-    this.#refill(t);
     if (t < this.#blockedUntil) return false;
-    if (this.#tokens >= cost) {
-      this.#tokens -= cost;
-      return true;
-    }
-    return false;
+    this.#prune(t);
+    if (this.#timestamps.length + cost > this.limit) return false;
+    for (let i = 0; i < cost; i += 1) this.#timestamps.push(t);
+    return true;
   }
 
   /** Milliseconds until `cost` slots are available, respecting any 429 penalty. */
   msUntil(cost = 1) {
     const t = this.now();
-    this.#refill(t);
+    this.#prune(t);
     const waits = [];
     if (t < this.#blockedUntil) waits.push(this.#blockedUntil - t);
-    if (this.#tokens < cost) waits.push(Math.ceil((cost - this.#tokens) / this.refillPerMs));
+    const over = this.#timestamps.length + cost - this.limit;
+    if (over > 0) {
+      const oldest = this.#timestamps[over - 1];
+      waits.push(Math.max(0, oldest + this.windowMs - t));
+    }
     return waits.length ? Math.max(...waits) : 0;
   }
 
@@ -71,8 +72,8 @@ export class RateLimiter {
   }
 
   get tokensLeft() {
-    this.#refill(this.now());
-    return this.#tokens;
+    this.#prune(this.now());
+    return Math.max(0, this.limit - this.#timestamps.length);
   }
 
   get blockedForMs() {

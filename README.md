@@ -27,7 +27,7 @@ src/sources/    statbate.js  — the real fetch client (bearer auth, 429 + Retry
                 demo.js      — deterministic fixture room covering every tipper tier
 src/oauth/      pkce.js   — verifier/challenge/state, authorize URL, token bodies
                 tokens.js — single-flight refresh honouring the single-use refresh rule
-src/server.js   stdlib node:http — /health, /api/live, /api/viewer, POST /api/tick, dashboard
+src/server.js   stdlib node:http — /api/health, /api/live, /api/viewer, POST /api/tick, dashboard
 public/         the dashboard (dark, glanceable, no build step, no external assets)
 ```
 
@@ -35,7 +35,7 @@ The core is platform-agnostic on purpose: the same engine is intended to run und
 
 ## Two hard constraints the code is shaped around
 
-**The rate limit is per Statbate *account*, not per token or per IP** — 120 requests/minute, shared by every token that account owns. So one `RateLimiter` is created per account and injected into every client that account uses; the scheduler widens the poll interval as tracked rooms grow, rather than letting each room poll in isolation.
+**The rate limit is per Statbate *account*, not per token or per IP** — 120 requests/minute, shared by every token that account owns. `createStatbateClient` requires a `RateLimiter` to be passed in — build one with `createAccountBudget()` and reuse that same instance across every client made for that account; the client fails closed with an explanatory error if none is supplied, rather than quietly going unbudgeted (tests and demo mode can opt out with `unsafeDisableBudget: true`). There is no scheduler yet that widens the poll interval as tracked rooms grow — each room's poll cadence is set independently by the caller.
 
 **Two access tiers, not interchangeable.** "Sign in with Statbate" (per-user OAuth + PKCE, scopes `profile` + `members:read`) is the only multi-tenant-safe path, and it opens exactly five lookups — one of which is the live room feed. Everything richer (model rank, sessions, earnings, tags, leaderboards, presence) needs each user's **own** Studio Plus token, which cannot be pooled without breaching Statbate's terms.
 
