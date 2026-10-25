@@ -1,8 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 
 import { createServer } from '../src/server.js';
 import { createDemoSource } from '../src/sources/demo.js';
+
+// The HTTP tests need to bind a localhost socket. A read-only review sandbox may
+// forbid that outright, so probe once at load and register those tests as a stated
+// SKIP rather than letting a wall of EPERM read like a broken packet.
+async function canBindLocalhost() {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.listen(0, '127.0.0.1', () => server.close(() => resolve(true)));
+  });
+}
+
+// PERCH_TEST_FORCE_NO_SOCKET=1 forces the sandbox condition locally, so the skip
+// path is proven to fire rather than merely written.
+const SOCKET_OK =
+  process.env.PERCH_TEST_FORCE_NO_SOCKET === '1' ? false : await canBindLocalhost();
+const socketTest = (name, fn) =>
+  test(name, { skip: SOCKET_OK ? false : 'sandbox forbids binding a localhost socket' }, fn);
 
 test('demo source: the fixture room exercises every tier the classifier can produce', () => {
   const source = createDemoSource({ queueLimit: 500 });
@@ -25,7 +44,7 @@ test('demo source: every queue entry carries a reason and a non-negative score',
   }
 });
 
-test('server: exposes health, the live queue, the dashboard, and per-viewer detail', async (t) => {
+socketTest('server: exposes health, the live queue, the dashboard, and per-viewer detail', async (t) => {
   const runner = createServer({ pollMs: 0 });
   const { url } = await runner.start(0);
   t.after(() => runner.stop());
@@ -50,7 +69,7 @@ test('server: exposes health, the live queue, the dashboard, and per-viewer deta
   assert.ok(viewer.classification.reasons.length > 0, 'the detail panel needs the same explanation');
 });
 
-test('server: rejects bad input instead of returning a confusing empty payload', async (t) => {
+socketTest('server: rejects bad input instead of returning a confusing empty payload', async (t) => {
   const runner = createServer({ pollMs: 0 });
   const { url } = await runner.start(0);
   t.after(() => runner.stop());
@@ -61,7 +80,7 @@ test('server: rejects bad input instead of returning a confusing empty payload',
   assert.equal((await fetch(`${url}/api/tick`)).status, 404, 'tick is POST-only');
 });
 
-test('server: POST /api/tick advances the room and reports the churn', async (t) => {
+socketTest('server: POST /api/tick advances the room and reports the churn', async (t) => {
   const runner = createServer({ pollMs: 0 });
   const { url } = await runner.start(0);
   t.after(() => runner.stop());
