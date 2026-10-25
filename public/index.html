@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>perch</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14181d; --panel-2: #1b2027; --line: #262c34;
+    --text: #e6e9ee; --muted: #8b95a3; --dim: #5c6470;
+    --returning_whale: #ffd166; --whale: #f4a261; --prospect: #7ee081;
+    --regular: #6cc4ff; --lapsed: #b197fc; --new_face: #a3aebd;
+    --history_unknown: #8b95a3; --window_shopper: #5c6470; --anonymous: #3d434c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 18px; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .wordmark { font-weight: 700; letter-spacing: .18em; text-transform: uppercase; font-size: 14px; color: var(--muted); }
+  .room { font-size: 20px; font-weight: 650; }
+  .stats { display: flex; gap: 22px; margin-left: auto; align-items: baseline; }
+  .stat b { display: block; font-size: 21px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  .badge {
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; color: var(--muted);
+  }
+  button {
+    font: inherit; font-size: 13px; background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer;
+  }
+  button:hover { border-color: #39424d; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; padding: 18px 20px 60px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  h2 { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 0 0 10px; }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-left-width: 3px;
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; cursor: pointer;
+  }
+  .card:hover { background: var(--panel-2); }
+  .card.selected { outline: 1px solid #3d4753; }
+  .card-head { display: flex; align-items: center; gap: 10px; }
+  .rank { color: var(--dim); font-variant-numeric: tabular-nums; width: 20px; }
+  .name { font-weight: 650; font-size: 16px; }
+  .pill {
+    font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+    padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; font-weight: 600;
+  }
+  .score { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .spend { display: flex; gap: 20px; margin: 8px 0 0 30px; flex-wrap: wrap; }
+  .spend div { font-variant-numeric: tabular-nums; }
+  .spend b { font-weight: 650; font-size: 15px; }
+  .spend span { display: block; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+  ul.reasons { margin: 7px 0 0 30px; padding: 0; list-style: none; color: var(--muted); font-size: 13px; }
+  ul.reasons li::before { content: "— "; color: var(--dim); }
+
+  aside .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  .legend-row { display: flex; align-items: center; gap: 9px; padding: 3px 0; font-size: 13px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  .legend-row .count { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .churn { font-size: 13px; color: var(--muted); }
+  .churn code { color: var(--text); font-size: 12px; }
+  .detail dl { margin: 0; font-size: 13px; }
+  .detail dt { color: var(--dim); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; margin-top: 8px; }
+  .detail dd { margin: 1px 0 0; }
+  .empty { color: var(--dim); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="wordmark">perch</span>
+  <span class="room" id="room">…</span>
+  <span class="badge" id="mode">demo</span>
+  <div class="stats">
+    <div class="stat"><b id="present">–</b><span>in room</span></div>
+    <div class="stat"><b id="named">–</b><span>signed in</span></div>
+    <div class="stat"><b id="anon">–</b><span>anonymous</span></div>
+    <div class="stat"><b id="tokens">–</b><span>tokens today</span></div>
+    <button id="tick">Tick</button>
+  </div>
+</header>
+
+<main>
+  <section>
+    <h2 id="queue-head">Attention queue</h2>
+    <div id="queue"></div>
+  </section>
+  <aside>
+    <div class="panel">
+      <h2>Room churn</h2>
+      <div class="churn" id="churn" style="margin-bottom:10px"></div>
+      <div class="churn" id="polled"></div>
+    </div>
+    <div class="panel">
+      <h2>In the queue</h2>
+      <div id="legend"></div>
+    </div>
+    <div class="panel detail" id="detail">
+      <h2>Viewer detail</h2>
+      <div class="empty">Click a card for where else they spend and what they pay for.</div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const TIERS = [
+  ['returning_whale', 'Returning big spender'], ['whale', 'Whale'], ['prospect', 'Pays elsewhere'],
+  ['regular', 'Regular'], ['lapsed', 'Went quiet'], ['new_face', 'New account'],
+  ['history_unknown', 'History unknown'], ['window_shopper', 'Never tipped'], ['anonymous', 'Anonymous'],
+];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const n = (v) => Number(v || 0).toLocaleString('en-US');
+const when = (ts) => ts ? new Date(ts).toLocaleTimeString() : '—';
+let selected = null;
+let last = null;
+
+function tierColor(t) { return getComputedStyle(document.documentElement).getPropertyValue('--' + t).trim() || '#5c6470'; }
+
+function renderQueue(data) {
+  const el = document.getElementById('queue');
+  if (!data.queue.length) { el.innerHTML = '<div class="empty">Nobody worth interrupting for right now.</div>'; return; }
+  el.innerHTML = data.queue.map((e) => {
+    const c = tierColor(e.tier);
+    const days = e.daysSinceLastTip == null ? 'never' : Math.round(e.daysSinceLastTip) + 'd ago';
+    return `<div class="card${selected === e.username ? ' selected' : ''}" style="border-left-color:${c}" data-name="${esc(e.username)}">
+      <div class="card-head">
+        <span class="rank">${e.rank}</span>
+        <span class="name">${esc(e.username)}</span>
+        <span class="pill" style="color:${c}">${esc(e.label)}</span>
+        <span class="score">score ${e.score}${e.dwellMs != null ? ' · here ' + Math.round(e.dwellMs / 1000) + 's' : ''}</span>
+      </div>
+      <div class="spend">
+        <div><b>${n(e.tokens.room.allTime)}</b><span>with this room</span></div>
+        <div><b>${n(e.elsewhereTokens)}</b><span>elsewhere</span></div>
+        <div><b>${days}</b><span>last tip</span></div>
+        <div><b>${n(e.breadth)}</b><span>models / 2wk</span></div>
+      </div>
+      <ul class="reasons">${e.reasons.slice(0, 3).map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+    </div>`;
+  }).join('');
+  for (const card of el.querySelectorAll('.card')) {
+    card.addEventListener('click', () => showDetail(card.dataset.name));
+  }
+}
+
+function renderLegend(data) {
+  const counts = {};
+  for (const e of data.queue) counts[e.tier] = (counts[e.tier] || 0) + 1;
+  document.getElementById('legend').innerHTML = TIERS.filter(([t]) => counts[t]).map(([t, label]) =>
+    `<div class="legend-row"><span class="swatch" style="background:${tierColor(t)}"></span>${esc(label)}<span class="count">${counts[t]}</span></div>`
+  ).join('') || '<div class="empty">—</div>';
+}
+
+async function showDetail(name) {
+  selected = name;
+  const box = document.getElementById('detail');
+  box.innerHTML = '<h2>Viewer detail</h2><div class="empty">Loading…</div>';
+  try {
+    const res = await fetch('/api/viewer?name=' + encodeURIComponent(name));
+    if (!res.ok) throw new Error('lookup failed');
+    const v = await res.json();
+    const d = v.dossier || {};
+    box.innerHTML = `<h2>Viewer detail</h2>
+      <div class="name" style="margin-bottom:6px">${esc(v.username)}</div>
+      <dl>
+        <dt>Now</dt><dd>${v.present ? 'in the room, since ' + when(v.firstSeenAt) : 'not currently in the room'}</dd>
+        <dt>All-time tokens</dt><dd>${n(d.all_time_tokens)}</dd>
+        <dt>Last 30 days</dt><dd>${n(d.last_30_days_tokens)}</dd>
+        <dt>Last tip</dt><dd>${v.classification?.daysSinceLastTip == null ? 'never' : Math.round(v.classification.daysSinceLastTip) + ' days ago'}</dd>
+        <dt>Models tipped / 2 weeks</dt><dd>${n(d.models_tipped_2weeks)}</dd>
+      </dl>
+      <h2 style="margin-top:14px">Spends elsewhere</h2>
+      ${v.topModels.length ? v.topModels.map((m) => `<div class="legend-row"><span>${esc(m.name)}</span><span class="count">${n(m.total_tokens)}</span></div>`).join('') : '<div class="empty">no other-room spend on record</div>'}
+      <h2 style="margin-top:14px">Pays for</h2>
+      ${v.tagSpending.length ? v.tagSpending.map((t) => `<div class="legend-row"><span>#${esc(t.tag)}</span><span class="count">${n(t.total_tokens)}</span></div>`).join('') : '<div class="empty">no tag spend on record</div>'}
+      <ul class="reasons" style="margin-left:0">${(v.classification?.reasons || []).map((r) => `<li>${esc(r)}</li>`).join('')}</ul>`;
+  } catch (err) {
+    box.innerHTML = `<h2>Viewer detail</h2><div class="empty">${esc(err.message)}</div>`;
+  }
+  renderQueue(last);
+}
+
+async function refresh() {
+  try {
+    const res = await fetch('/api/live');
+    const data = await res.json();
+    last = data;
+    document.getElementById('room').textContent = data.room.site + ' / ' + data.room.name;
+    document.getElementById('mode').textContent = data.mode;
+    document.getElementById('present').textContent = n(data.room.present);
+    document.getElementById('named').textContent = n(data.room.named);
+    document.getElementById('anon').textContent = n(data.room.anonymous);
+    document.getElementById('tokens').textContent = n(data.room.tokensToday);
+    document.getElementById('queue-head').textContent = 'Attention queue — ' + data.queue.length + ' of ' + data.room.named;
+    document.getElementById('churn').innerHTML =
+      'arrived <code>' + n(data.arrivals.length) + '</code> &nbsp; left <code>' + n(data.departures.length) + '</code>';
+    document.getElementById('polled').textContent = 'last poll ' + when(data.polledAt) + ' · poll #' + data.polls;
+    renderQueue(data);
+    renderLegend(data);
+  } catch { /* keep the last good frame on screen */ }
+}
+
+document.getElementById('tick').addEventListener('click', async () => {
+  await fetch('/api/tick', { method: 'POST' });
+  refresh();
+});
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "perch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live companion for cam streamers. Reads Statbate analytics and surfaces them to the human who is streaming. Never acts on a cam account.",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "node src/server.js --demo --port 8787"
+  }
+}
