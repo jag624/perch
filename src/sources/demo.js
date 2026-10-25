@@ -136,6 +136,19 @@ function buildPool({ now, modelName, seed }) {
     });
   });
 
+  add('history_unknown', 4, () => ({
+    username: `unlookupable_${n}`,
+    color: 'grey',
+    userType: 'user',
+    room: { hour: 0, day: 0, week: 0, thirtyDays: 0, allTime: 0 },
+    allRooms: { hour: 0, thirtyDays: 0, allTime: 0 },
+    // A batch row that errored, exactly as the Statbate batch endpoint permits per-row.
+    dossier: { name: `unlookupable_${n}`, error: 'not found' },
+    lastTipDaysAgo: null,
+    tenureDays: null,
+    breadth: 0,
+  }));
+
   add('anonymous', 60, () => ({
     username: '',
     color: null,
@@ -191,6 +204,7 @@ function toFeedRow(entry, now) {
 /** Resolve the placeholder dates into real ISO timestamps relative to `now`. */
 function toDossier(entry, now, modelName) {
   if (!entry.dossier) return null;
+  if (entry.dossier.error) return { ...entry.dossier };
   const d = { ...entry.dossier };
   d.last_tip_date = entry.lastTipDaysAgo == null ? null : isoDaysAgo(now, entry.lastTipDaysAgo);
   d.first_message_date = isoDaysAgo(now, entry.tenureDays);

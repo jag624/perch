@@ -46,6 +46,8 @@
   }
   .card:hover { background: var(--panel-2); }
   .card.selected { outline: 1px solid #3d4753; }
+  .card.anon-summary { cursor: default; }
+  .card.anon-summary:hover { background: var(--panel); }
   .card-head { display: flex; align-items: center; gap: 10px; }
   .rank { color: var(--dim); font-variant-numeric: tabular-nums; width: 20px; }
   .name { font-weight: 650; font-size: 16px; }
@@ -82,7 +84,7 @@
     <div class="stat"><b id="present">–</b><span>in room</span></div>
     <div class="stat"><b id="named">–</b><span>signed in</span></div>
     <div class="stat"><b id="anon">–</b><span>anonymous</span></div>
-    <div class="stat"><b id="tokens">–</b><span>tokens today</span></div>
+    <div class="stat"><b id="tokens">–</b><span>tokens with this room</span></div>
     <button id="tick">Tick</button>
   </div>
 </header>
@@ -126,7 +128,10 @@ function tierColor(t) { return getComputedStyle(document.documentElement).getPro
 function renderQueue(data) {
   const el = document.getElementById('queue');
   if (!data.queue.length) { el.innerHTML = '<div class="empty">Nobody worth interrupting for right now.</div>'; return; }
-  el.innerHTML = data.queue.map((e) => {
+  const named = data.queue.filter((e) => !e.isAnonymous);
+  const anonymous = data.queue.filter((e) => e.isAnonymous);
+
+  const namedCards = named.map((e) => {
     const c = tierColor(e.tier);
     const days = e.daysSinceLastTip == null ? 'never' : Math.round(e.daysSinceLastTip) + 'd ago';
     return `<div class="card${selected === e.username ? ' selected' : ''}" style="border-left-color:${c}" data-name="${esc(e.username)}">
@@ -144,8 +149,24 @@ function renderQueue(data) {
       </div>
       <ul class="reasons">${e.reasons.slice(0, 3).map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
     </div>`;
-  }).join('');
-  for (const card of el.querySelectorAll('.card')) {
+  });
+
+  // Ranked last and shown collapsed: the backend already folds every
+  // anonymous viewer into one non-interactive summary entry, so render its
+  // real count rather than the (always-1) length of the filtered array.
+  const anonCount = anonymous[0]?.count ?? 0;
+  const anonymousCard = anonCount
+    ? `<div class="card anon-summary" style="border-left-color:${tierColor('anonymous')}">
+      <div class="card-head">
+        <span class="rank">—</span>
+        <span class="name">${anonCount} anonymous viewer${anonCount === 1 ? '' : 's'}</span>
+        <span class="pill" style="color:${tierColor('anonymous')}">Anonymous</span>
+      </div>
+    </div>`
+    : '';
+
+  el.innerHTML = namedCards.join('') + anonymousCard;
+  for (const card of el.querySelectorAll('.card[data-name]')) {
     card.addEventListener('click', () => showDetail(card.dataset.name));
   }
 }

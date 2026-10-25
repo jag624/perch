@@ -27,13 +27,26 @@ test('demo source: the fixture room exercises every tier the classifier can prod
   const source = createDemoSource({ queueLimit: 500 });
   const tiers = new Set(source.live().queue.map((entry) => entry.tier));
 
-  for (const tier of ['returning_whale', 'whale', 'prospect', 'regular', 'lapsed', 'new_face', 'window_shopper', 'anonymous']) {
+  for (const tier of [
+    'returning_whale', 'whale', 'prospect', 'regular', 'lapsed', 'new_face', 'history_unknown', 'window_shopper', 'anonymous',
+  ]) {
     assert.ok(tiers.has(tier), `the demo must be able to show a "${tier}"`);
   }
 
   const feed = source.live();
   assert.ok(feed.room.present > 20, 'the fixture room should look like a busy room');
   assert.ok(feed.room.anonymous > 0, 'anonymous viewers are the bulk of a real room and must be modelled');
+});
+
+test('demo source: anonymous viewers collapse into one non-interactive summary entry', () => {
+  const source = createDemoSource({ initialPresent: 1 });
+  const live = source.live();
+  const anonymousEntries = live.queue.filter((entry) => entry.username === '');
+
+  assert.ok(anonymousEntries.length <= 1, 'anonymous viewers must collapse into at most one queue entry');
+  assert.equal(anonymousEntries.length, 1, 'this fixture should still have anonymous viewers present in the room');
+  assert.equal(anonymousEntries[0].interactive, false, 'the collapsed anonymous entry must be marked non-interactive');
+  assert.equal(anonymousEntries[0].count, live.room.anonymous, 'the collapsed entry must carry the real anonymous count');
 });
 
 test('demo source: every queue entry carries a reason and a non-negative score', () => {
@@ -56,7 +69,9 @@ socketTest('server: exposes health, the live queue, the dashboard, and per-viewe
   const live = await (await fetch(`${url}/api/live`)).json();
   assert.ok(Array.isArray(live.queue) && live.queue.length > 0);
   assert.equal(live.queue[0].rank, 1);
-  assert.ok(live.queue[0].reasons.length > 0, 'every queue entry must explain itself');
+  for (const entry of live.queue) {
+    assert.ok(entry.reasons.length > 0, `${entry.username || '(anonymous)'} failed to explain itself — every queue entry must explain itself`);
+  }
   assert.ok(live.room.present >= live.queue.length);
   assert.equal(typeof live.room.tokensToday, 'number');
 

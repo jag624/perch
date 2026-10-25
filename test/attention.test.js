@@ -71,7 +71,9 @@ test('queue: ranks by actionability and always explains itself', () => {
 
   assert.equal(queue[0].username, 'whale');
   assert.equal(queue[0].rank, 1);
-  assert.ok(queue[0].reasons.length >= 1, 'a queue entry without reasons is noise');
+  for (const e of queue) {
+    assert.ok(e.reasons.length >= 1, `${e.username || '(anonymous)'} has no reasons — a queue entry without reasons is noise`);
+  }
   assert.equal(queue[queue.length - 1].username, '', 'anonymous viewers sink to the bottom');
   assert.equal(queue.find((e) => e.username === 'lurker').tier, 'window_shopper');
 });
